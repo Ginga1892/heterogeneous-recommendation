@@ -3,6 +3,13 @@ import torch.nn as nn
 
 
 class DeepFM(nn.Module):
+    """DeepFM
+
+    Simplified:
+        dnn layers: 3
+        feature type: discrete
+    """
+
     def __init__(self, field_sizes, emb_size, hid_size, dropout=0.7):
         super(DeepFM, self).__init__()
 
@@ -20,13 +27,19 @@ class DeepFM(nn.Module):
         self.out = nn.Sigmoid()
 
     def forward(self, x):
-        """Order 1 connections"""
+        """
+        Args:
+            x: a tensor of [m, batch_size], tensor([[2, 0, 1],
+                                                    [1, 3, 0]])
+        """
+
+        # Order 1 connections
         order_1_embeddeds = [self.order_1_embeddings[i](x[:, i]) for i in range(self.m)]
 
-        """Order 2 connections"""
+        # Order 2 connections
         order_2_embeddeds = [self.order_2_embeddings[i](x[:, i]) for i in range(self.m)]
 
-        """FM part"""
+        # FM part
         order_1_products = sum(order_1_embeddeds)
 
         p1 = torch.pow(sum(order_2_embeddeds), 2)
@@ -35,7 +48,7 @@ class DeepFM(nn.Module):
 
         y_fm = order_1_products + order_2_products
 
-        """DNN part"""
+        # DNN part
         y_dnn = self.dnn(torch.cat(order_2_embeddeds, 1))
 
         return self.out(y_fm + y_dnn)
