@@ -8,7 +8,7 @@ class Transformer(nn.Module):
     Simplified:
         layers: 6
         heads: 8
-        layers of feed-forward networks: 1
+        feed-forward networks: 1
     """
 
     def __init__(self, encoder, decoder):
@@ -16,6 +16,8 @@ class Transformer(nn.Module):
 
         self.encoder = encoder
         self.decoder = decoder
+        self.enc = None
+        self.dec = None
 
     @staticmethod
     def get_trg_mask(trg):
@@ -23,12 +25,12 @@ class Transformer(nn.Module):
         return torch.tril(torch.ones((trg_len, trg_len))).bool()
 
     def forward(self, src, trg):
-        encoder_output = self.encoder(src)
+        self.enc = self.encoder(src)
 
         trg_mask = self.get_trg_mask(trg)
-        prediction = self.decoder(trg, encoder_output, trg_mask)
+        self.dec = self.decoder(trg, self.enc, trg_mask)
 
-        return prediction
+        return self.dec
 
 
 class MultiHeadAttention(nn.Module):
@@ -77,7 +79,7 @@ class MultiHeadAttention(nn.Module):
 class Encoder(nn.Module):
     """Encoder of the Transformer model"""
 
-    def __init__(self, input_size, hid_size, dropout=0.7, max_len=100):
+    def __init__(self, input_size, hid_size, dropout=0.9, max_len=100):
         super(Encoder, self).__init__()
 
         self.n = 6
@@ -107,7 +109,7 @@ class Encoder(nn.Module):
         # add & layer normalization
         # feed-forward networks
         # add & layer normalization
-        for i in range(self.n):
+        for _ in range(self.n):
             attention_output = self.self_attention(src, src, src, src_mask)
             attention_output = self.layer_norm(src + self.dropout(attention_output))
 
@@ -120,7 +122,7 @@ class Encoder(nn.Module):
 class Decoder(nn.Module):
     """Decoder of the Transformer model"""
 
-    def __init__(self, output_size, hid_size, dropout=0.7, max_len=100):
+    def __init__(self, output_size, hid_size, dropout=0.9, max_len=100):
         super(Decoder, self).__init__()
 
         self.n = 6
@@ -153,16 +155,16 @@ class Decoder(nn.Module):
         # add & layer normalization
         # encoder-decoder attention layer
         # linear & softmax
-        for i in range(self.n):
+        for _ in range(self.n):
+            # Self attention
             attention_output = self.self_attention(trg, trg, trg, trg_mask)
             attention_output = self.layer_norm(trg + self.dropout(attention_output))
 
+            # Encoder-decoder attention
             attention_output = self.self_attention(attention_output, encoder_output, encoder_output, src_mask)
             attention_output = self.layer_norm(attention_output + self.dropout(attention_output))
 
             decoder_output = self.ffn(attention_output)
             decoder_output = self.layer_norm(attention_output + self.dropout(decoder_output))
 
-        prediction = torch.softmax(self.fc_out(decoder_output), dim=-1)
-
-        return prediction
+        return torch.softmax(self.fc_out(decoder_output), dim=-1)
