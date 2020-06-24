@@ -6,7 +6,7 @@ class DeepFM(nn.Module):
     """DeepFM
 
     Simplified:
-        dnn layers: 3
+        DNN layers: 3
         feature type: discrete
     """
 
@@ -29,26 +29,30 @@ class DeepFM(nn.Module):
     def forward(self, x):
         """
         Args:
-            x: a tensor of [m, batch_size], tensor([[2, 0, 1],
+            x: a tensor of [batch_size, m], tensor([[2, 0, 1],
                                                     [1, 3, 0]])
         """
 
         # Order 1 connections
-        order_1_embeddeds = [self.order_1_embeddings[i](x[:, i]) for i in range(self.m)]
+        # order_1_embedded = [batch_size, 1] * m
+        order_1_embedded = [self.order_1_embeddings[i](x[:, i]) for i in range(self.m)]
 
         # Order 2 connections
-        order_2_embeddeds = [self.order_2_embeddings[i](x[:, i]) for i in range(self.m)]
+        # order_1_embedded = [batch_size, emb_size] * m
+        order_2_embedded = [self.order_2_embeddings[i](x[:, i]) for i in range(self.m)]
 
         # FM part
-        order_1_products = sum(order_1_embeddeds)
+        order_1_product = sum(order_1_embedded)
 
-        p1 = torch.pow(sum(order_2_embeddeds), 2)
-        p2 = sum([torch.pow(e, 2) for e in order_2_embeddeds])
-        order_2_products = torch.sum((p1 - p2) / 2, 1).unsqueeze(1)
+        p1 = torch.pow(sum(order_2_embedded), 2)
+        p2 = sum([torch.pow(e, 2) for e in order_2_embedded])
+        order_2_product = torch.sum((p1 - p2) / 2, 1).unsqueeze(1)
 
-        y_fm = order_1_products + order_2_products
+        # y_fm = [batch_size, 1]
+        y_fm = order_1_product + order_2_product
 
         # DNN part
-        y_dnn = self.dnn(torch.cat(order_2_embeddeds, 1))
+        # y_dnn = [batch_size, 1]
+        y_dnn = self.dnn(torch.cat(order_2_embedded, 1))
 
         return self.out(y_fm + y_dnn)
