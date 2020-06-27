@@ -4,7 +4,7 @@
 
 * DeepFM
 * Transformer
-* SenseSeq
+* Seq2Seq
 
 ## Dataset
 
