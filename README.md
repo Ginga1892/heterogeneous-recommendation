@@ -1,5 +1,11 @@
 # Heterogeneous Recommendation
 
+## Model
+
+* DeepFM
+* Transformer
+* SenseSeq
+
 ## Dataset
 
 * IMDb

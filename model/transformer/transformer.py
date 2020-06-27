@@ -57,12 +57,12 @@ class MultiHeadAttention(nn.Module):
         v = self.w_v(value)
 
         # q, v = [batch_size, src_len, n_heads, head_size]
-        # k = q, k = [batch_size, src_len, head_size, n_heads]
+        # k = [batch_size, src_len, head_size, n_heads]
         q = q.view(batch_size, -1, self.h, hid_size // self.h).permute(0, 2, 1, 3)
         k = k.view(batch_size, -1, self.h, hid_size // self.h).permute(0, 2, 3, 1)
         v = v.view(batch_size, -1, self.h, hid_size // self.h).permute(0, 2, 1, 3)
 
-        # Attention(Q, K, V) = softmax(Q * K^T / d) * V
+        # Attention(Q, K, V) = Softmax(Q * K^T / d) * V
         attention_scores = torch.matmul(q, k) / self.d
         if mask:
             attention_scores = attention_scores.masked_fill(mask == 0, -1e4)
