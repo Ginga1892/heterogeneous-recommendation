@@ -5,6 +5,7 @@
 * DeepFM
 * Transformer
 * Seq2Seq
+* BERT
 
 ## Dataset
 
