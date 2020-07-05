@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import numpy as np
 
 
 class Transformer(nn.Module):
@@ -8,7 +9,7 @@ class Transformer(nn.Module):
     Simplified:
         layers: 6
         heads: 8
-        feed-forward networks: 1
+        feed-forward networks: 2
     """
 
     def __init__(self, encoder, decoder):
@@ -40,15 +41,16 @@ class MultiHeadAttention(nn.Module):
         super(MultiHeadAttention, self).__init__()
 
         self.h = n_heads
+        self.d_k = hid_size // n_heads
 
         self.w_q = nn.Linear(hid_size, hid_size)
         self.w_k = nn.Linear(hid_size, hid_size)
         self.w_v = nn.Linear(hid_size, hid_size)
         self.w_o = nn.Linear(hid_size, hid_size)
-        self.d = torch.sqrt(torch.FloatTensor([hid_size // self.h]))
+        # self.d = torch.sqrt(torch.FloatTensor([hid_size // self.h]))
 
     def forward(self, query, key, value, mask=None):
-        # q, k, v = [batch_size, src_len]
+        # q, k, v = [batch_size, src_len, hid_size]
         batch_size, hid_size = query.shape[0], query.shape[2]
 
         # q, k, v = [batch_size, src_len, hid_size]
@@ -58,13 +60,13 @@ class MultiHeadAttention(nn.Module):
 
         # q, v = [batch_size, src_len, n_heads, head_size]
         # k = [batch_size, src_len, head_size, n_heads]
-        q = q.view(batch_size, -1, self.h, hid_size // self.h).permute(0, 2, 1, 3)
-        k = k.view(batch_size, -1, self.h, hid_size // self.h).permute(0, 2, 3, 1)
-        v = v.view(batch_size, -1, self.h, hid_size // self.h).permute(0, 2, 1, 3)
+        q = q.view(batch_size, -1, self.h, self.d_k).permute(0, 2, 1, 3)
+        k = k.view(batch_size, -1, self.h, self.d_k).permute(0, 2, 3, 1)
+        v = v.view(batch_size, -1, self.h, self.d_k).permute(0, 2, 1, 3)
 
         # Attention(Q, K, V) = Softmax(Q * K^T / d) * V
-        attention_scores = torch.matmul(q, k) / self.d
-        if mask:
+        attention_scores = torch.matmul(q, k) / np.sqrt(self.d_k)
+        if mask is not None:
             attention_scores = attention_scores.masked_fill(mask == 0, -1e4)
 
         attention = torch.softmax(attention_scores, dim=-1)
@@ -84,12 +86,12 @@ class Encoder(nn.Module):
 
         self.n = 6
         self.h = 8
-        self.d = torch.sqrt(torch.FloatTensor([hid_size]))
+        self.d_model = hid_size
 
         self.tok_embedding = nn.Embedding(input_size, hid_size)
         self.pos_embedding = nn.Embedding(max_len, hid_size)
         self.self_attention = MultiHeadAttention(hid_size, self.h)
-        self.ffn = nn.Linear(hid_size, hid_size)
+        self.ffn = nn.Sequential(nn.Linear(hid_size, hid_size * 4), nn.GELU(), nn.Linear(hid_size * 4, hid_size))
         self.layer_norm = nn.LayerNorm(hid_size)
         self.dropout = nn.Dropout(dropout)
 
@@ -97,7 +99,7 @@ class Encoder(nn.Module):
         batch_size, src_len = src.shape
 
         # Token embeddings
-        te = self.tok_embedding(src) * self.d
+        te = self.tok_embedding(src) * np.sqrt(self.d_model)
         # Positional embeddings
         pos = torch.arange(0, src_len).unsqueeze(0).repeat(batch_size, 1)
         pe = self.pos_embedding(pos)
@@ -127,12 +129,12 @@ class Decoder(nn.Module):
 
         self.n = 6
         self.h = 8
-        self.d = torch.sqrt(torch.FloatTensor([hid_size]))
+        self.d_model = hid_size
 
         self.tok_embedding = nn.Embedding(output_size, hid_size)
         self.pos_embedding = nn.Embedding(max_len, hid_size)
         self.self_attention = MultiHeadAttention(hid_size, self.h)
-        self.ffn = nn.Linear(hid_size, hid_size)
+        self.ffn = nn.Sequential(nn.Linear(hid_size, hid_size * 4), nn.GELU(), nn.Linear(hid_size * 4, hid_size))
         self.layer_norm = nn.LayerNorm(hid_size)
         self.dropout = nn.Dropout(dropout)
         self.fc_out = nn.Linear(hid_size, output_size)
@@ -141,7 +143,7 @@ class Decoder(nn.Module):
         batch_size, trg_len = trg.shape
 
         # Token embeddings
-        te = self.tok_embedding(trg) * self.d
+        te = self.tok_embedding(trg) * np.sqrt(self.d_model)
         # Positional embeddings
         pos = torch.arange(0, trg_len).unsqueeze(0).repeat(batch_size, 1)
         pe = self.pos_embedding(pos)
