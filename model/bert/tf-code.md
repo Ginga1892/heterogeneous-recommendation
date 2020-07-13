@@ -2,6 +2,39 @@
 
 ## 预处理
 
+**主函数**
+
+```python
+def main(_):
+    tf.logging.set_verbosity(tf.logging.INFO)
+    # 定义分词
+    tokenizer = tokenization.FullTokenizer(
+      vocab_file=FLAGS.vocab_file, do_lower_case=FLAGS.do_lower_case)
+    
+    # 获取输入文件
+  	input_files = []
+  	for input_pattern in FLAGS.input_file.split(","):
+    	input_files.extend(tf.gfile.Glob(input_pattern))
+  	tf.logging.info("*** Reading from input files ***")
+  	for input_file in input_files:
+    	tf.logging.info("  %s", input_file)
+        
+    # 生成训练样本
+  	rng = random.Random(FLAGS.random_seed)
+  	instances = create_training_instances(
+        input_files, tokenizer, FLAGS.max_seq_length, FLAGS.dupe_factor,
+      	FLAGS.short_seq_prob, FLAGS.masked_lm_prob,
+        FLAGS.max_predictions_per_seq, rng)
+    
+    # 输出
+  	output_files = FLAGS.output_file.split(",")
+  	tf.logging.info("*** Writing to output files ***")
+  	for output_file in output_files:
+    	tf.logging.info("  %s", output_file)
+    write_instance_to_example_files(instances, tokenizer, FLAGS.max_seq_length,
+                                    FLAGS.max_predictions_per_seq, output_files)
+```
+
 **生成训练样本**
 
 ```python
@@ -212,36 +245,240 @@ def create_masked_lm_predictions(tokens, masked_lm_prob,
     return (output_tokens, masked_lm_positions, masked_lm_labels)
 ```
 
+
+
+## 预训练
+
 **主函数**
 
 ```python
 def main(_):
     tf.logging.set_verbosity(tf.logging.INFO)
-    # 定义分词
-    tokenizer = tokenization.FullTokenizer(
-      vocab_file=FLAGS.vocab_file, do_lower_case=FLAGS.do_lower_case)
-    
-    # 获取输入
-  	input_files = []
-  	for input_pattern in FLAGS.input_file.split(","):
-    	input_files.extend(tf.gfile.Glob(input_pattern))
-  	tf.logging.info("*** Reading from input files ***")
-  	for input_file in input_files:
-    	tf.logging.info("  %s", input_file)
+    if not FLAGS.do_train and not FLAGS.do_eval:
+        raise ValueError("At least one of `do_train` or `do_eval` must be True.")
+    bert_config = modeling.BertConfig.from_json_file(FLAGS.bert_config_file)
+    tf.gfile.MakeDirs(FLAGS.output_dir)
+    # 获取输入文件
+    input_files = []
+    for input_pattern in FLAGS.input_file.split(","):
+        input_files.extend(tf.gfile.Glob(input_pattern))
+    tf.logging.info("*** Input Files ***")
+    for input_file in input_files:
+        tf.logging.info("  %s" % input_file)
         
-    # 生成训练样本
-  	rng = random.Random(FLAGS.random_seed)
-  	instances = create_training_instances(
-        input_files, tokenizer, FLAGS.max_seq_length, FLAGS.dupe_factor,
-      	FLAGS.short_seq_prob, FLAGS.masked_lm_prob,
-        FLAGS.max_predictions_per_seq, rng)
+    # 配置tpu
+    tpu_cluster_resolver = None
+    if FLAGS.use_tpu and FLAGS.tpu_name:
+        tpu_cluster_resolver = tf.contrib.cluster_resolver.TPUClusterResolver(
+            FLAGS.tpu_name, zone=FLAGS.tpu_zone, project=FLAGS.gcp_project)
+    is_per_host = tf.contrib.tpu.InputPipelineConfig.PER_HOST_V2
+    run_config = tf.contrib.tpu.RunConfig(
+        cluster=tpu_cluster_resolver, master=FLAGS.master,
+        model_dir=FLAGS.output_dir, save_checkpoints_steps=FLAGS.save_checkpoints_steps,
+        tpu_config=tf.contrib.tpu.TPUConfig(
+            iterations_per_loop=FLAGS.iterations_per_loop,
+            num_shards=FLAGS.num_tpu_cores,
+            per_host_input_for_training=is_per_host))
     
-    # 输出
-  	output_files = FLAGS.output_file.split(",")
-  	tf.logging.info("*** Writing to output files ***")
-  	for output_file in output_files:
-    	tf.logging.info("  %s", output_file)
-    write_instance_to_example_files(instances, tokenizer, FLAGS.max_seq_length,
-                                    FLAGS.max_predictions_per_seq, output_files)
+    # 创建bert，config、checkpoint、lr、steps
+    model_fn = model_fn_builder(
+        bert_config=bert_config, init_checkpoint=FLAGS.init_checkpoint,
+        learning_rate=FLAGS.learning_rate, num_train_steps=FLAGS.num_train_steps,
+        num_warmup_steps=FLAGS.num_warmup_steps, use_tpu=FLAGS.use_tpu,
+        use_one_hot_embeddings=FLAGS.use_tpu)
+    # 定义训练器
+    estimator = tf.contrib.tpu.TPUEstimator(
+        use_tpu=FLAGS.use_tpu, model_fn=model_fn, config=run_config,
+        train_batch_size=FLAGS.train_batch_size, eval_batch_size=FLAGS.eval_batch_size)
+    
+    # 训练
+    if FLAGS.do_train:
+        tf.logging.info("***** Running training *****")
+        tf.logging.info("  Batch size = %d", FLAGS.train_batch_size)
+        # 读取tf输入
+        train_input_fn = input_fn_builder(
+            input_files=input_files, max_seq_length=FLAGS.max_seq_length,
+            max_predictions_per_seq=FLAGS.max_predictions_per_seq, is_training=True)
+        estimator.train(input_fn=train_input_fn, max_steps=FLAGS.num_train_steps)
+    # 评估
+    if FLAGS.do_eval:
+        tf.logging.info("***** Running evaluation *****")
+        tf.logging.info("  Batch size = %d", FLAGS.eval_batch_size)
+        eval_input_fn = input_fn_builder(
+            input_files=input_files, max_seq_length=FLAGS.max_seq_length,
+            max_predictions_per_seq=FLAGS.max_predictions_per_seq, is_training=False)
+        result = estimator.evaluate(input_fn=eval_input_fn, steps=FLAGS.max_eval_steps)
+        output_eval_file = os.path.join(FLAGS.output_dir, "eval_results.txt")
+        with tf.gfile.GFile(output_eval_file, "w") as writer:
+            tf.logging.info("***** Eval results *****")
+            for key in sorted(result.keys()):
+                tf.logging.info("  %s = %s", key, str(result[key]))
+                writer.write("%s = %s\n" % (key, str(result[key])))
+```
+
+**创建bert**
+
+```python
+def model_fn_builder(bert_config, init_checkpoint, learning_rate,
+                     num_train_steps, num_warmup_steps, use_tpu,
+                     use_one_hot_embeddings):
+    def model_fn(features, labels, mode, params):
+        # 特征信息，输入（ids、mask、句对ids）、mask信息（位置、labels、权重）、nsp信息
+        tf.logging.info("*** Features ***")
+        for name in sorted(features.keys()):
+            tf.logging.info("  name = %s, shape = %s" % (name, features[name].shape))
+        input_ids = features["input_ids"]
+        input_mask = features["input_mask"]
+        segment_ids = features["segment_ids"]
+        masked_lm_positions = features["masked_lm_positions"]
+        masked_lm_ids = features["masked_lm_ids"]
+        masked_lm_weights = features["masked_lm_weights"]
+        next_sentence_labels = features["next_sentence_labels"]
+        is_training = (mode == tf.estimator.ModeKeys.TRAIN)
+        # bert model
+        model = modeling.BertModel(
+            config=bert_config, is_training=is_training,
+            input_ids=input_ids, input_mask=input_mask,
+            token_type_ids=segment_ids, use_one_hot_embeddings=use_one_hot_embeddings
+        # 损失函数
+        (masked_lm_loss,
+         masked_lm_example_loss, masked_lm_log_probs) = get_masked_lm_output(
+            bert_config, model.get_sequence_output(), model.get_embedding_table(),
+            masked_lm_positions, masked_lm_ids, masked_lm_weights)
+        (next_sentence_loss, next_sentence_example_loss,
+         next_sentence_log_probs) = get_next_sentence_output(
+            bert_config, model.get_pooled_output(), next_sentence_labels)
+        total_loss = masked_lm_loss + next_sentence_loss
+            
+        tvars = tf.trainable_variables()
+        initialized_variable_names = {}
+        scaffold_fn = None
+        # 载入模型
+        if init_checkpoint:
+            (assignment_map,
+             initialized_variable_names) = modeling.get_assignment_map_from_checkpoint(
+                tvars, init_checkpoint)
+            if use_tpu:
+                def tpu_scaffold():
+                    tf.train.init_from_checkpoint(init_checkpoint, assignment_map)
+                    return tf.train.Scaffold()
+                scaffold_fn = tpu_scaffold
+            else:
+                tf.train.init_from_checkpoint(init_checkpoint, assignment_map)
+
+        output_spec = None
+        # 训练
+        if mode == tf.estimator.ModeKeys.TRAIN:
+            train_op = optimization.create_optimizer(
+                total_loss, learning_rate,
+                num_train_steps, num_warmup_steps, use_tpu)
+            output_spec = tf.contrib.tpu.TPUEstimatorSpec(
+                mode=mode, loss=total_loss,
+                train_op=train_op, scaffold_fn=scaffold_fn)
+        # 评估
+        elif mode == tf.estimator.ModeKeys.EVAL:
+            def metric_fn(masked_lm_example_loss, masked_lm_log_probs, masked_lm_ids,
+                          masked_lm_weights, next_sentence_example_loss,
+                          next_sentence_log_probs, next_sentence_labels):
+                # mlm logits
+                masked_lm_log_probs = tf.reshape(
+                    masked_lm_log_probs,[-1, masked_lm_log_probs.shape[-1]])
+                # 预测值
+                masked_lm_predictions = tf.argmax(
+                    masked_lm_log_probs, axis=-1, output_type=tf.int32)
+                masked_lm_example_loss = tf.reshape(masked_lm_example_loss, [-1])
+                # labels
+                masked_lm_ids = tf.reshape(masked_lm_ids, [-1])
+                masked_lm_weights = tf.reshape(masked_lm_weights, [-1])
+                # 计算准确率
+                masked_lm_accuracy = tf.metrics.accuracy(
+                    labels=masked_lm_ids,
+                    predictions=masked_lm_predictions,
+                    weights=masked_lm_weights)
+                # 损失加权平均
+                masked_lm_mean_loss = tf.metrics.mean(
+                    values=masked_lm_example_loss, weights=masked_lm_weights)
+                # nsp
+                next_sentence_log_probs = tf.reshape(
+                    next_sentence_log_probs, [-1, next_sentence_log_probs.shape[-1]])
+                next_sentence_predictions = tf.argmax(
+                    next_sentence_log_probs, axis=-1, output_type=tf.int32)
+                next_sentence_labels = tf.reshape(next_sentence_labels, [-1])
+                next_sentence_accuracy = tf.metrics.accuracy(
+                    labels=next_sentence_labels, predictions=next_sentence_predictions)
+                next_sentence_mean_loss = tf.metrics.mean(
+                    values=next_sentence_example_loss)
+                # 返回准确率+损失
+                return {
+                    "masked_lm_accuracy": masked_lm_accuracy,
+                    "masked_lm_loss": masked_lm_mean_loss,
+                    "next_sentence_accuracy": next_sentence_accuracy,
+                    "next_sentence_loss": next_sentence_mean_loss,
+                }
+            eval_metrics = (metric_fn, [
+                masked_lm_example_loss, masked_lm_log_probs, masked_lm_ids,
+                masked_lm_weights, next_sentence_example_loss,
+                next_sentence_log_probs, next_sentence_labels
+            ])
+            output_spec = tf.contrib.tpu.TPUEstimatorSpec(
+                mode=mode, loss=total_loss,
+                eval_metrics=eval_metrics,
+                scaffold_fn=scaffold_fn)
+        else:
+            raise ValueError("Only TRAIN and EVAL modes are supported: %s" % (mode))
+
+        return output_spec
+
+    return model_fn
+```
+
+**读取tf输入**
+
+```python
+def input_fn_builder(input_files,
+                     max_seq_length,
+                     max_predictions_per_seq,
+                     is_training,
+                     num_cpu_threads=4):
+    def input_fn(params):
+        batch_size = params["batch_size"]
+        name_to_features = {
+            "input_ids": tf.FixedLenFeature([max_seq_length], tf.int64),
+            "input_mask": tf.FixedLenFeature([max_seq_length], tf.int64),
+            "segment_ids": tf.FixedLenFeature([max_seq_length], tf.int64),
+            "masked_lm_positions": tf.FixedLenFeature(
+                [max_predictions_per_seq], tf.int64),
+            "masked_lm_ids": tf.FixedLenFeature(
+                [max_predictions_per_seq], tf.int64),
+            "masked_lm_weights": tf.FixedLenFeature(
+                [max_predictions_per_seq], tf.float32),
+            "next_sentence_labels": tf.FixedLenFeature([1], tf.int64),
+        }
+        
+        if is_training:
+            # 读取输入
+            d = tf.data.Dataset.from_tensor_slices(tf.constant(input_files))
+            d = d.repeat()
+            d = d.shuffle(buffer_size=len(input_files))
+            # 并行读取
+            cycle_length = min(num_cpu_threads, len(input_files))
+            d = d.apply(
+                tf.contrib.data.parallel_interleave(
+                    tf.data.TFRecordDataset,
+                    sloppy=is_training,
+                    cycle_length=cycle_length))
+            d = d.shuffle(buffer_size=100)
+        else:
+            d = tf.data.TFRecordDataset(input_files)
+            d = d.repeat()
+        d = d.apply(
+            tf.contrib.data.map_and_batch(
+                lambda record: _decode_record(record, name_to_features),
+                batch_size=batch_size,
+                num_parallel_batches=num_cpu_threads,
+                drop_remainder=True))
+        return d
+
+    return input_fn
 ```
 
